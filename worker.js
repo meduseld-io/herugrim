@@ -3,22 +3,43 @@ import * as jose from 'jose';
 
 const app = new Hono();
 
-let keypair;
+let keyPromise;
 
-async function getKeyPair() {
-  if (!keypair) {
-    keypair = await crypto.subtle.generateKey(
-      {
-        name: 'RSASSA-PKCS1-v1_5',
-        modulusLength: 2048,
-        publicExponent: new Uint8Array([1, 0, 1]),
-        hash: 'SHA-256',
-      },
-      true,
-      ['sign', 'verify']
-    );
+/**
+ * Load the signing key from the SIGNING_KEY secret (a private RSA JWK).
+ * Falls back to an in-memory key when the secret is not set. That key differs
+ * per isolate and changes on every deploy, so tokens can intermittently fail
+ * verification; set SIGNING_KEY in production (see `npm run generate-key`).
+ */
+function getKeys(env) {
+  if (!keyPromise) {
+    keyPromise = loadKeys(env).catch((e) => {
+      keyPromise = undefined;
+      throw e;
+    });
   }
-  return keypair;
+  return keyPromise;
+}
+
+async function loadKeys(env) {
+  let privateJwk;
+
+  if (env.SIGNING_KEY) {
+    privateJwk = JSON.parse(env.SIGNING_KEY);
+  } else {
+    console.warn('SIGNING_KEY is not set; using an ephemeral per-isolate signing key');
+    const { privateKey } = await jose.generateKeyPair('RS256', { extractable: true });
+    privateJwk = await jose.exportJWK(privateKey);
+  }
+
+  const publicJwk = { kty: privateJwk.kty, n: privateJwk.n, e: privateJwk.e };
+  const kid = await jose.calculateJwkThumbprint(publicJwk);
+
+  return {
+    kid,
+    privateKey: await jose.importJWK(privateJwk, 'RS256'),
+    publicJwk: { ...publicJwk, kid, alg: 'RS256', use: 'sig' },
+  };
 }
 
 /**
@@ -40,6 +61,39 @@ function parseGuilds(env) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Fetch every guild ID the user is in. Discord returns at most 200 guilds per
+ * page, so follow the `after` cursor until a short page comes back.
+ * Returns a Response on failure so the caller can return it directly.
+ */
+async function fetchGuildIds(accessToken) {
+  const ids = [];
+  let after = '0';
+
+  for (;;) {
+    const res = await fetch(
+      `https://discord.com/api/v10/users/@me/guilds?limit=200&after=${after}`,
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+
+    if (!res.ok) {
+      console.error('Discord guilds fetch failed:', res.status, await res.text());
+      return new Response('Failed to fetch Discord guilds', { status: 502 });
+    }
+
+    const page = await res.json();
+
+    if (!Array.isArray(page)) {
+      console.error('Discord guilds response is not an array:', page);
+      return new Response('Invalid Discord guilds response', { status: 502 });
+    }
+
+    ids.push(...page.map((g) => g.id));
+    if (page.length < 200) return ids;
+    after = page[page.length - 1].id;
+  }
 }
 
 /* ---------------- HEALTH ---------------- */
@@ -81,8 +135,10 @@ app.get('/authorize', (c) => {
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: scopes,
-    state: c.req.query('state'),
   });
+
+  const state = c.req.query('state');
+  if (state) params.set('state', state);
 
   return c.redirect('https://discord.com/oauth2/authorize?' + params);
 });
@@ -136,25 +192,15 @@ app.post('/token', async (c) => {
     return c.text('Invalid Discord user response', 502);
   }
 
-  // Fetch guilds for restriction check
-  const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
-    headers: { Authorization: 'Bearer ' + token.access_token },
-  });
-
-  if (!guildsRes.ok) {
-    console.error('Discord guilds fetch failed:', guildsRes.status, await guildsRes.text());
-    return c.text('Failed to fetch Discord guilds', 502);
-  }
-
-  const guilds = await guildsRes.json();
-
-  if (!Array.isArray(guilds)) {
-    console.error('Discord guilds response is not an array:', guilds);
-    return c.text('Invalid Discord guilds response', 502);
+  if (!user.verified) {
+    return c.text('Your Discord account email is not verified', 403);
   }
 
   if (allowedGuilds.length) {
-    const guildIds = guilds.map((g) => g.id);
+    const guildIds = await fetchGuildIds(token.access_token);
+
+    if (guildIds instanceof Response) return guildIds;
+
     if (!allowedGuilds.some((id) => guildIds.includes(id))) {
       return c.text('Not in required Discord server', 403);
     }
@@ -183,13 +229,14 @@ app.post('/token', async (c) => {
     }
   }
 
-  const { privateKey } = await getKeyPair();
+  const { kid, privateKey } = await getKeys(c.env);
 
   const idToken = await new jose.SignJWT({
     sub: user.id,
     name: user.global_name || user.username,
     preferred_username: user.username,
     email: user.email,
+    email_verified: true,
     discord_user: {
       id: user.id,
       username: user.username,
@@ -199,7 +246,8 @@ app.post('/token', async (c) => {
       is_admin: isAdmin,
     },
   })
-    .setProtectedHeader({ alg: 'RS256' })
+    .setProtectedHeader({ alg: 'RS256', kid })
+    .setIssuedAt()
     .setExpirationTime('1h')
     .setAudience(clientId)
     .setIssuer(new URL(c.req.url).origin)
@@ -215,16 +263,9 @@ app.post('/token', async (c) => {
 /* ---------------- JWKS ---------------- */
 
 app.get('/jwks.json', async (c) => {
-  const { publicKey } = await getKeyPair();
+  const { publicJwk } = await getKeys(c.env);
 
-  return c.json({
-    keys: [
-      {
-        alg: 'RS256',
-        ...(await crypto.subtle.exportKey('jwk', publicKey)),
-      },
-    ],
-  });
+  return c.json({ keys: [publicJwk] });
 });
 
 export default app;
