@@ -1,29 +1,31 @@
 {
-  "name": "discord-oidc-worker",
+  "name": "herugrim",
   "version": "1.0.0",
-  "description": "Discord OIDC Wrapper in CF Workers",
+  "description": "Discord OIDC provider for Cloudflare Access, running on Cloudflare Workers",
   "main": "worker.js",
   "scripts": {
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
-    "prepare": "husky install",
-    "release": "commit-and-tag-version --prerelease alpha",
-    "release:patch": "commit-and-tag-version --release-as patch --prerelease alpha",
+    "check": "wrangler deploy --dry-run --outdir dist",
+    "generate-key": "node scripts/generate-key.mjs",
+    "prepare": "husky",
+    "release": "commit-and-tag-version",
+    "release:alpha": "commit-and-tag-version --prerelease alpha",
+    "release:patch": "commit-and-tag-version --release-as patch",
     "release:minor": "commit-and-tag-version --release-as minor",
-    "release:major": "commit-and-tag-version --release-as major",
-    "release:stable": "commit-and-tag-version"
+    "release:major": "commit-and-tag-version --release-as major"
   },
-  "author": "Erisa A <erisa@erisa.uk>",
+  "author": "quietarcade (https://github.com/quietarcade)",
   "license": "MIT",
   "dependencies": {
-    "hono": "^4.6.20",
-    "jose": "^5.9.6"
+    "hono": "^4.13.13",
+    "jose": "^6.2.12"
   },
   "devDependencies": {
-    "@commitlint/cli": "^18.4.3",
-    "@commitlint/config-conventional": "^18.4.3",
-    "commit-and-tag-version": "^12.7.0",
-    "husky": "^8.0.3",
-    "wrangler": "^4.71.0"
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "commit-and-tag-version": "^13.3.0",
+    "husky": "^9.1.7",
+    "wrangler": "^4.151.0"
   }
 }

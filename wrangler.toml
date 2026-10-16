@@ -1,6 +1,6 @@
 name = "herugrim-discord-oidc"
 main = "worker.js"
-compatibility_date = "2022-12-24"
+compatibility_date = "2026-10-01"
 
 [vars]
 # Required — your Discord application OAuth2 credentials
@@ -16,3 +16,7 @@ compatibility_date = "2022-12-24"
 # Optional — enable admin role detection (leave empty to skip)
 # ADMIN_GUILD_ID = ""  # defaults to first ALLOWED_GUILDS entry if not set
 # ADMIN_ROLE_ID = ""
+
+# Recommended — stable signing key so tokens verify across isolates and deploys.
+# Set it as a secret, never here:
+#   npm run generate-key | npx wrangler secret put SIGNING_KEY

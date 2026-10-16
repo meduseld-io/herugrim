@@ -15,14 +15,15 @@ Allows you to authenticate with Cloudflare Access using your Discord account via
 ### `worker.js`
 
 - **Environment-based configuration** - all config reads from Wrangler environment variables (`env.CLIENT_ID`, `env.CLIENT_SECRET`, etc.) instead of hardcoded constants. Secrets stay out of source code.
-- **Removed KV dependency** - signing keys are generated in-memory via `crypto.subtle.generateKey()` instead of stored in Cloudflare KV.
-- **Migrated to Hono** - replaced the raw `addEventListener("fetch")` handler with [Hono](https://honojs.dev/) for cleaner routing.
+- **Removed KV dependency** - the signing key comes from the `SIGNING_KEY` Wrangler secret instead of Cloudflare KV. Tokens carry a `kid` matching the JWKS entry.
+- **Migrated to Hono** - replaced the raw `addEventListener("fetch")` handler with [Hono](https://hono.dev/) for cleaner routing.
 - **Added `discord_user` claim to ID token** - the JWT includes a `discord_user` object with: `id`, `username`, `global_name`, `avatar`, `discriminator`, and `is_admin`.
 - **Added optional admin role detection** - when `ADMIN_ROLE_ID` is set, the worker checks guild membership for that role and sets `is_admin` accordingly. `ADMIN_GUILD_ID` defaults to `ALLOWED_GUILDS[0]` if not set separately.
 - **Dynamic OAuth scopes** - only requests `guilds.members.read` when admin detection is enabled, reducing permissions for simpler setups.
 - **Added error handling** - Discord API responses are validated with descriptive error messages on failure.
 - **Added `/health` endpoint** - returns `{ "status": "ok" }` for uptime monitoring.
 - **Added guild restriction** - users must be a member of an allowed guild to authenticate (optional).
+- **Verified emails only** - users whose Discord email is unverified are rejected, so Access email rules can be trusted.
 
 ### `wrangler.toml`
 
@@ -30,7 +31,7 @@ Allows you to authenticate with Cloudflare Access using your Discord account via
 
 ### `package.json`
 
-- **Simplified** - only `hono`, `jose`, and `wrangler` as dependencies. Two scripts: `dev` and `deploy`.
+- **Simplified** - only `hono` and `jose` at runtime. Scripts for `dev`, `deploy`, `check`, `generate-key`, and releases.
 
 ### Removed from Original
 
@@ -72,10 +73,12 @@ Click the deploy button above, or manually:
    ADMIN_ROLE_ID = ""
    ```
 
-3. Set your client secret as a Wrangler secret (keeps it out of source):
+3. Set your client secret and a signing key as Wrangler secrets (keeps them out of source):
    ```bash
    npx wrangler secret put CLIENT_SECRET
+   npm run generate-key | npx wrangler secret put SIGNING_KEY
    ```
+   Generate the signing key once and keep it. Without it, each worker instance makes its own temporary key, which changes on every deploy and can make logins fail at random.
 
 4. Test locally:
    ```bash
@@ -97,6 +100,7 @@ Click the deploy button above, or manually:
 | `ALLOWED_GUILDS` | No | Comma-separated guild IDs to restrict access. Empty = allow any Discord user |
 | `ADMIN_GUILD_ID` | No | Guild to check for admin role. Defaults to first `ALLOWED_GUILDS` entry |
 | `ADMIN_ROLE_ID` | No | Discord role ID that grants admin. Empty = skip admin detection |
+| `SIGNING_KEY` | Recommended | Private RSA JWK used to sign ID tokens (use `wrangler secret put`, generate with `npm run generate-key`) |
 
 ## Endpoints
 
@@ -114,10 +118,10 @@ Click the deploy button above, or manually:
 2. Add a new OpenID Connect login method:
    - **App ID**: Your Discord application ID
    - **Client secret**: Your Discord OAuth2 secret
-   - **Auth URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/authorize`
-   - **Token URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/token`
-   - **Certificate URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/jwks.json`
-   - **PKCE**: Enabled
+   - **Auth URL**: `https://herugrim-discord-oidc.<your-workers-subdomain>.workers.dev/authorize`
+   - **Token URL**: `https://herugrim-discord-oidc.<your-workers-subdomain>.workers.dev/token`
+   - **Certificate URL**: `https://herugrim-discord-oidc.<your-workers-subdomain>.workers.dev/jwks.json`
+   - **PKCE**: Disabled (the worker does not implement PKCE, so enabling it adds no protection)
    - **OIDC Claims**: `id`, `preferred_username`, `name`, `discord_user`
 
 The `discord_user` claim appears under the `custom` key in the Cloudflare Access identity response and contains `id`, `username`, `global_name`, `avatar`, `discriminator`, and `is_admin`.
